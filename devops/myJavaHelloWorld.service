@@ -1,0 +1,14 @@
+[Unit]
+Description=My java HelloWorld unit
+Requisite=nginx.service
+After=nginx.service
+StartLimitIntervalSec=200
+StartLimitBurst=5
+
+[Service]
+ExecStart=java -jar /home/tds/work/spring-1.0-SNAPSHOT.jar
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+[Unit]
+Description=My first systemD service unit
+
+[Service]
+ExecStart=/bin/bash /home/tds/work/scriptForMyUnit1.sh
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=My java HelloWorld unit for Scheduling
+Requisite=nginx.service
+After=nginx.service
+
+[Service]
+#Schedule Hello World Java: Mon-Fr at 22:30, Sun at 17:50. Stop in 5 min after starting
+ExecStart=java -jar /home/tds/work/spring-1.0-SNAPSHOT-7000.jar
+RuntimeMaxSec=300s
+
+[Install]
+WantedBy=multi-user.target

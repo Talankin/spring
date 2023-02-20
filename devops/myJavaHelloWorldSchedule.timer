@@ -1,0 +1,17 @@
+[Unit]
+Description=Schedule Hello World Java: Mon-Fr at 22:30, Sun at 17:50. Stop in 5 min after starting
+#Allow manual starts
+RefuseManualStart=no
+#Allow manual stops
+RefuseManualStop=no
+
+[Timer]
+#Execute job if it missed a run due to machine being off
+Persistent=true
+#File describing job to execute
+Unit=myJavaHelloWorldSchedule.service
+OnCalendar=Mon..Fri 22:30
+OnCalendar=Sun 17:50
+
+[Install]
+WantedBy=timers.target
