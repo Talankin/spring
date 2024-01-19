@@ -1,0 +1,274 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Devops School AWS cloudformation-7-linux-stack -> java app; 1 ec2
+Parameters:
+  VPCStackName:
+    Description: Name of the base VPC stack
+    Type: String
+    Default: cloudformation-7-nginx
+
+  # CIDR of VPC
+  NetworkCIDR:
+    Description: CIDR of the new VPC
+    Type: String
+    Default: 192.168.67.0/24
+
+  # AvailabilityZone Name where subnet will be created
+  AvailabilityZoneName:
+    Description: AvailabilityZone Name of the new SubNet
+    Type: AWS::EC2::AvailabilityZone::Name
+    Default: eu-north-1a
+
+  # CIDR of new subnet within this VPC
+  SubnetCIDR:
+    Description: CIDR of the new subnet within this VPC
+    Type: String
+    Default: 192.168.67.0/28
+
+Resources:
+  MyS3Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  MyEC2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref MyS3Role
+
+  MyEC2Instance:
+    Type: AWS::EC2::Instance
+    Metadata:
+      AWS::CloudFormation::Init:
+        configSets:
+          InstallAndRun:
+            - Install
+          #- Configure
+        Install:
+          packages:
+            yum:
+              git: []
+              nginx: []
+          files:
+            /etc/nginx/conf.d/my.conf:
+              content: !Sub |
+                server {
+                  listen 80;
+                  listen [::]:80;
+                  server_name !PUBLIC_IP!;
+                  root /var/www/html;
+                  access_log /var/log/nginx/spring.log;
+                  error_log  /var/log/nginx/spring-error.log error;
+                  location / {
+                    proxy_pass http://127.0.0.1:8080; # Replace with the address of your Spring Boot application
+                    proxy_set_header X-Real-IP $remote_addr;
+                    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+                    proxy_set_header X-Forwarded-Proto $scheme;
+                    proxy_set_header Host $http_host;
+                  }
+                }
+              mode: "000644"
+              owner: "ec2-user"
+              group: "ec2-user"
+
+    Properties:
+      #ImageId: ami-0506d6d51f1916a96 #debian. No cfn-init
+      ImageId: ami-0d0b75c8c47ed0edf #linux 2023
+      InstanceType: t3.micro
+      SubnetId: !Ref MyPublicSubnet
+      AvailabilityZone: !Ref AvailabilityZoneName
+      KeyName: cloudformation-keypair
+      IamInstanceProfile: !Ref MyEC2InstanceProfile
+      SecurityGroupIds:
+        - !Ref MyEC2InstanceSG
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          echo "============================"
+          yum install -y nginx
+          yum install -y git
+          wget https://download.oracle.com/java/17/archive/jdk-17_linux-x64_bin.rpm
+          sudo rpm -ivh jdk-17_linux-x64_bin.rpm
+          rm jdk-17_linux-x64_bin.rpm
+          export JAVA_HOME=/usr/java/jdk-17
+          export PATH=$PATH:$JAVA_HOME/bin
+          java -version
+          yum install -y maven
+          mvn -v
+          yum install -y mc
+          TOKEN=`curl -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600"`
+          export PUBLIC_IP=$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4 -H "X-aws-ec2-metadata-token: $TOKEN")
+          
+          /opt/aws/bin/cfn-init -v --configsets InstallAndRun --stack ${AWS::StackName} --resource MyEC2Instance --region ${AWS::Region} || error_exit 'Failed to run cfn-init'
+          sed -i "s/\!PUBLIC_IP\!/$PUBLIC_IP/" /etc/nginx/conf.d/my.conf
+          systemctl restart nginx
+          
+          git clone https://github.com/Talankin/spring.git
+          pwd
+          cd spring
+          echo  -e "server.public.ip: $PUBLIC_IP" | sudo tee -a src/main/resources/application.yml
+          echo  -e "aws.bucket.name: test-bucket-tds1" | sudo tee -a src/main/resources/application.yml
+          echo  -e "aws.bucket.key: logo.jpg" | sudo tee -a src/main/resources/application.yml
+          mvn clean package -U
+          mkdir -p /var/www/html/
+          chown -R $USER:$USER /var/www
+          cp target/spring-1.0-SNAPSHOT.jar /var/www/html
+          java -jar /var/www/html/spring-1.0-SNAPSHOT.jar
+      Tags:
+        - Key: Name
+          Value: cloudformation-7-ec2
+        - Key: Application
+          Value: !Ref "AWS::StackName"
+
+  MyEC2InstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: to connect via ssh
+      VpcId: !Ref MyVPC
+      SecurityGroupIngress:
+        # allow http
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+        # allow ssh
+        - IpProtocol: tcp
+          FromPort: '22'
+          ToPort: '22'
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key:  Name
+          Value:  cloudformation-7-sg
+        - Key:  Application
+          Value: !Ref "AWS::StackName"
+
+  MyVPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref NetworkCIDR
+      EnableDnsHostnames: 'false'
+      EnableDnsSupport: 'true'
+      InstanceTenancy: default
+      Tags:
+        - Key: Name
+          Value: cloudformation-7-vpc
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+
+  MyInternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: cloudformation-7-igw
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+
+  # Attach Internet Gateway to VPC
+  vpcToIgw:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref MyInternetGateway
+
+  # Create a route table for VPC. All ingress/egress trafic will go through gateway
+  MyRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: cloudformation-7-public-route-table
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+
+  # Add routes entries for public network through igw
+  MyRoutes:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref MyRouteTable
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref MyInternetGateway
+
+  # NACL
+  MyPublicNACL:
+    Type: 'AWS::EC2::NetworkAcl'
+    Properties:
+      VpcId: !Ref MyVPC
+      Tags:
+        - Key: Name
+          Value: cloudformation-7-vpc-nacl
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+
+  # Allow all Incoming TCP traffic
+  MyNaclRulesForInboundTCP:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref MyPublicNACL
+      RuleNumber: '100'
+      Protocol: '6'  # tcp
+      #Protocol: -1 # If you specify -1, all ports are opened and the PortRange property is ignored
+      RuleAction: allow
+      Egress: 'false'  # this rule applies to ingress traffic to the subnet
+      CidrBlock: 0.0.0.0/0  # any ip address
+      PortRange:
+        From: '0'
+        To: '65535'
+
+  # Allow all Outgoing TCP traffic
+  MyNaclRulesForOutboundTCP:
+    Type: 'AWS::EC2::NetworkAclEntry'
+    Properties:
+      NetworkAclId: !Ref MyPublicNACL
+      RuleNumber: '100'
+      Protocol: '6'  # tcp
+      #Protocol: -1 # If you specify -1, all ports are opened and the PortRange property is ignored
+      RuleAction: allow
+      Egress: 'true'  # this rule applies to egress traffic from the subnet
+      CidrBlock: 0.0.0.0/0
+      PortRange:
+        From: '0'  # client will be using ephemeral port, using 80 or 22 here will not work
+        To: '65535'
+
+  # Create public subnet
+  MyPublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref MyVPC
+      AvailabilityZone: !Ref AvailabilityZoneName
+      CidrBlock: !Ref SubnetCIDR
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value:
+            !Join
+            - ''
+            - - 'cloudformation-7-public-subnet-'
+              - !Ref AvailabilityZoneName
+        - Key: Application
+          Value: !Ref 'AWS::StackName'
+
+  # Associate subnet with our route table else by default it is associated with main route table
+  MySubnetRouteTableAssociation:
+    Type: 'AWS::EC2::SubnetRouteTableAssociation'
+    Properties:
+      SubnetId: !Ref MyPublicSubnet
+      RouteTableId: !Ref MyRouteTable
+
+  # Associate subnet with NACL else by default it is asscoiated with main NACLs
+  MySubnetNaclAssociation:
+    Type: 'AWS::EC2::SubnetNetworkAclAssociation'
+    Properties:
+      SubnetId: !Ref MyPublicSubnet
+      NetworkAclId: !Ref MyPublicNACL
